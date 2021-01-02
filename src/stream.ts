@@ -15,23 +15,23 @@ export class ToStringStream extends Writable {
   }
 
   toString(): string {
-    return Buffer.concat(this.chunks).toString('utf8');
+    return trim(Buffer.concat(this.chunks).toString('utf8'));
   }
 }
 
-export class WrappedStdoutStream extends Writable {
+export class WrappedStream extends Writable {
 
-  constructor(private readonly spinner: Ora) {
+  constructor(private readonly spinner: Ora, private readonly destination: Writable) {
     super();
   }
 
   _write(chunk: any, encoding: BufferEncoding, callback: (error?: Error | null) => void) {
     if (this.spinner.isSpinning) {
       this.spinner.stop();
-      process.stdout.write(chunk);
+      this.destination.write(chunk);
       this.spinner.start();
     } else {
-      process.stdout.write(chunk);
+      this.destination.write(chunk);
     }
     callback();
   }

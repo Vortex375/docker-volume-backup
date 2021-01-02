@@ -1,0 +1,25 @@
+{
+  "name": "docker-volume-backup",
+  "version": "0.0.1",
+  "description": "Command-Line Utility to take Backups of Volumes of Docker Containers",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vortex375/docker-volume-backup.git"
+  },
+  "keywords": [
+    "docker",
+    "volume",
+    "container",
+    "backup",
+    "restore"
+  ],
+  "author": "Benjamin Schmitz",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/Vortex375/docker-volume-backup/issues"
+  },
+  "homepage": "https://github.com/Vortex375/docker-volume-backup#readme",
+  "bin": {
+    "docker-volume-backup": "main.js"
+  }
+}

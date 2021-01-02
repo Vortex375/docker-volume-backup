@@ -21,9 +21,13 @@ import Table from 'easy-table';
 import minimist from 'minimist';
 
 import { bgCyan } from 'colors/safe';
-import { assign, filter, map, zipWith, sum, join } from 'lodash';
+import { assign, filter, map, zipWith, sum, join, drop } from 'lodash';
 import { formatISO } from 'date-fns';
-import { ToStringStream, WrappedStdoutStream } from './stream';
+import { ToStringStream, WrappedStream } from './stream';
+
+interface BackupOptions {
+  outputDir?: string;
+}
 
 interface Target {
   name: string;
@@ -35,7 +39,7 @@ const BACKUP_MOUNT = '/docker-volume-backup';
 
 const progress = ora();
 
-async function dockerVolumeBackup(dockerOptions: Docker.DockerOptions = {}, containers: string[]) {
+async function dockerVolumeBackup(dockerOptions: Docker.DockerOptions = {}, backupOptions: BackupOptions = {}, containers: string[]) {
   try {
     progress.start(`${bgCyan('connect-to-docker')} connect to Docker daemon`);
     const docker = new Docker(dockerOptions);
@@ -81,10 +85,12 @@ async function dockerVolumeBackup(dockerOptions: Docker.DockerOptions = {}, cont
 
     let returnCode = 0;
     for (const name of containers) {
-      const backupContainer = await prepareContainer(docker, name);
+      const backupContainer = await prepareContainer(docker, name, backupOptions.outputDir ?? '.');
+      const backupPath = await prepareBackupPath(backupContainer, name);
       for (const target of targets[name]) {
-        const [exitCode, backupPath] = await backup(docker, backupContainer, name, target);
-        progress.succeed(`backed up ${name}:${target.name} to ${path.basename(backupPath)}`);
+        const exitCode = await backup(backupContainer, backupPath, target);
+        const outputPath = path.join(backupOptions.outputDir ?? '', join(drop(backupPath.split(path.sep), 2), path.sep), `${target.name}.tar`);
+        progress.succeed(`backed up ${name}:${target.name} to ${outputPath}`);
         if (exitCode > returnCode) {
           returnCode = exitCode;
         }
@@ -128,12 +134,12 @@ async function pullImage(docker: Docker) {
   }
 }
 
-async function prepareContainer(docker: Docker, forContainer: string) {
+async function prepareContainer(docker: Docker, forContainer: string, outputPath: string) {
   progress.start(`${bgCyan('prepare-container')} prepare container '${IMAGE_NAME}'`);
   const container = await docker.createContainer({
     Image: IMAGE_NAME,
     HostConfig: {
-      Binds: [`${path.resolve('.')}:${BACKUP_MOUNT}`],
+      Binds: [`${path.resolve(outputPath)}:${BACKUP_MOUNT}`],
       VolumesFrom: [forContainer]
     },
     OpenStdin: true
@@ -143,29 +149,42 @@ async function prepareContainer(docker: Docker, forContainer: string) {
   return container;
 }
 
-async function backup(docker: Docker, container: Docker.Container, containerName: string, target: Target): Promise<[number, string]> {
+async function prepareBackupPath(backupContainer: Docker.Container, containerName: string) {
   const dateString = formatISO(new Date());
-  const backupPath = path.join(BACKUP_MOUNT, `backup-${containerName}-${target.name}-${dateString}.tar`);
-  const tarCmd = ['tar', 'cf', backupPath, '.'];
-  // const tarCmd = ['touch', backupPath];
-  progress.start(`${bgCyan('make-backup')} ${containerName}:${target.name}: ${join(tarCmd, ' ')}`);
-  const exec = await container.exec({ Cmd: tarCmd, WorkingDir: target.path, Tty: true, AttachStdout: true, AttachStderr: true });
-  const stream = await exec.start({});
-  const stdErrStream = new ToStringStream();
-  docker.modem.demuxStream(stream, new WrappedStdoutStream(progress), stdErrStream);
-  await new Promise((resolve) => stream.once('end', resolve));
-  if ( ! stdErrStream.isEmpty()) {
-    console.error(stdErrStream.toString());
-    throw new Error('tar command failed');
-  }
-  const inspect = await exec.inspect();
-  if (inspect.ExitCode === 1) {
-    progress.warn('tar command returned exit code 1 - backup may be incomplete');
-  } else if (inspect.ExitCode !== 0) {
-    throw new Error(`tar command failed with exit code ${inspect.ExitCode}`);
+  const backupDir = path.join(BACKUP_MOUNT, `${containerName}-${dateString}`);
+  const mkdirCmd = ['mkdir', backupDir];
+
+  progress.start(`${bgCyan('prepare-backup-path')} ${containerName}: ${join(mkdirCmd, ' ')}`);
+  const exitCode = await execInContainer(backupContainer, mkdirCmd);
+  if (exitCode !== 0) {
+    throw new Error('mkdir command failed');
   }
 
-  return [inspect.ExitCode, backupPath];
+  return backupDir;
+}
+
+async function backup(backupContainer: Docker.Container, backupDir: string, target: Target): Promise<number> {
+  const backupPath = path.join(backupDir, `${target.name}.tar`);
+  const tarCmd = ['tar', 'cf', backupPath, '.'];
+
+  progress.start(`${bgCyan('make-backup')} ${target.name}: ${join(tarCmd, ' ')}`);
+  const exitCode = await execInContainer(backupContainer, tarCmd, target.path);
+  if (exitCode === 1) {
+    progress.warn('tar command returned exit code 1 - backup may be incomplete');
+  } else if (exitCode !== 0) {
+    throw new Error(`tar command failed with exit code ${exitCode}`);
+  }
+
+  return exitCode;
+}
+
+async function execInContainer(container: Docker.Container, command: string[], workingDir?: string): Promise<number> {
+  const exec = await container.exec({ Cmd: command, WorkingDir: workingDir, Tty: true, AttachStdout: true, AttachStderr: true });
+  const stream = await exec.start({});
+  container.modem.demuxStream(stream, new WrappedStream(progress, process.stdout), new WrappedStream(progress, process.stderr));
+  await new Promise((resolve) => stream.once('end', resolve));
+  const inspect = await exec.inspect();
+  return inspect.ExitCode ?? 0;
 }
 
 async function closeContainer(container: Docker.Container) {
@@ -182,4 +201,6 @@ if (argv['h'] || argv['help'] || argv._.length === 0) {
   process.exit(1);
 }
 
-dockerVolumeBackup({}, argv._);
+const outputDir: string = argv['output-dir'] ?? argv['o'];
+
+dockerVolumeBackup({}, { outputDir }, argv._);

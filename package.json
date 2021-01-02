@@ -2,10 +2,15 @@
   "name": "docker-volume-backup",
   "version": "0.0.1",
   "description": "Command-Line Utility to take Backups of Volumes of Docker Containers",
-  "main": "index.js",
+  "main": "dist/bundle.js",
   "scripts": {
-    "build-bin": "npm run build && pkg dist/index.js --output bin/docker-volume-backup",
-    "build": "tsc",
+    "build-bin": "npm run build && npm run pkg",
+    "build": "npm run tsc && npm run browserify && npm run copy-assets",
+    "browserify": "browserify -s docker-volume-backup --bare out-tsc/index.js -o dist/bundle.js",
+    "clean": "rimraf bin && rimraf dist && rimraf out-tsc",
+    "copy-assets": "cpy --rename package.json package.dist.json dist/ && cpy LICENSE README.md main.js dist/",
+    "tsc": "tsc",
+    "pkg": "pkg out-tsc/index.js --output bin/docker-volume-backup",
     "test": "jest"
   },
   "repository": {
@@ -40,7 +45,10 @@
     "@types/easy-table": "0.0.32",
     "@types/lodash": "^4.14.166",
     "@types/minimist": "^1.2.1",
+    "browserify": "^17.0.0",
+    "cpy-cli": "^3.1.1",
     "pkg": "^4.4.9",
+    "rimraf": "^3.0.2",
     "typescript": "^4.1.3"
   }
 }

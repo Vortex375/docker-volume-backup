@@ -4,7 +4,7 @@
   "description": "Command-Line Utility to take Backups of Volumes of Docker Containers",
   "main": "index.js",
   "scripts": {
-    "build-bin": "npm run build && nexe -i dist/index.js -o bin/docker-volume-backup",
+    "build-bin": "npm run build && pkg dist/index.js --output bin/docker-volume-backup",
     "build": "tsc",
     "test": "jest"
   },
@@ -40,7 +40,7 @@
     "@types/easy-table": "0.0.32",
     "@types/lodash": "^4.14.166",
     "@types/minimist": "^1.2.1",
-    "nexe": "^3.3.7",
+    "pkg": "^4.4.9",
     "typescript": "^4.1.3"
   }
 }

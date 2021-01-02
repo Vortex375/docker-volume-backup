@@ -4,6 +4,7 @@
   "description": "Command-Line Utility to take Backups of Volumes of Docker Containers",
   "main": "index.js",
   "scripts": {
+    "build-bin": "npm run build && nexe -i dist/index.js -o bin/docker-volume-backup",
     "build": "tsc",
     "test": "jest"
   },
@@ -25,13 +26,20 @@
   },
   "homepage": "https://github.com/Vortex375/docker-volume-backup#readme",
   "dependencies": {
+    "colors": "^1.4.0",
+    "date-fns": "^2.16.1",
     "dockerode": "^3.2.1",
+    "easy-table": "^1.1.1",
     "lodash": "^4.17.20",
+    "minimist": "^1.2.5",
     "ora": "^5.2.0",
     "zone.js": "^0.11.3"
   },
   "devDependencies": {
     "@types/dockerode": "^3.2.1",
-    "@types/lodash": "^4.14.166"
+    "@types/easy-table": "0.0.32",
+    "@types/lodash": "^4.14.166",
+    "@types/minimist": "^1.2.1",
+    "nexe": "^3.3.7"
   }
 }

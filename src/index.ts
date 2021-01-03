@@ -17,13 +17,14 @@ import Docker = require('dockerode');
 import ora = require('ora');
 import util = require('util');
 import path = require('path');
+import fs = require('fs-extra');
 import Table from 'easy-table';
 import minimist from 'minimist';
 
-import { bgCyan } from 'colors/safe';
+import { bgCyan, green, red, bold } from 'colors/safe';
 import { assign, filter, map, zipWith, sum, join, drop } from 'lodash';
-import { formatISO } from 'date-fns';
-import { ToStringStream, WrappedStream } from './stream';
+import { format } from 'date-fns';
+import { WrappedStream } from './stream';
 
 interface BackupOptions {
   outputDir?: string;
@@ -115,6 +116,73 @@ async function dockerVolumeBackup(dockerOptions: Docker.DockerOptions = {}, back
   }
 }
 
+async function dockerVolumeRestore(dockerOptions: Docker.DockerOptions = {}, containerName: string, backupPath: string) {
+  try {
+    progress.start(`${bgCyan('connect-to-docker')} connect to Docker daemon`);
+    const docker = new Docker(dockerOptions);
+    await docker.ping();
+    progress.succeed('connected to Docker');
+
+    progress.start(`${bgCyan('get-mounts-from-container')} inspecting container ${containerName}`);
+    const container = docker.getContainer(containerName);
+    const mounts = await getMountsFromContainer(container);
+
+    // ✓ X
+    const infoTable = new Table();
+    const targets: Target[] = [];
+    infoTable.newRow();
+    infoTable.cell('Container', containerName);
+    for (const mount of mounts) {
+      const backupFile = path.join(backupPath, `${mount.name}.tar`);
+      try {
+        await fs.access(backupFile, fs.constants.R_OK);
+        infoTable.cell('Volume', `${bold(green('✓'))} ${mount.name}:${mount.path}`);
+        infoTable.cell('From', backupFile);
+        targets.push(mount);
+      } catch (err) {
+        infoTable.cell('Volume', `${bold(red('❌'))} ${mount.name}:${mount.path}`);
+        infoTable.cell('From', '(no backup file found)');
+      }
+      infoTable.newRow();
+    }
+    progress.info('Restore Targets: \n\n' + infoTable.toString());
+
+    if (targets.length === 0) {
+      progress.warn('nothing to restore');
+      process.exitCode = 1;
+      return;
+    }
+
+    pullImage(docker);
+
+    const inspect = await container.inspect();
+    if (inspect.State.Running) {
+      progress.start(`${bgCyan('stop-container')} stopping container ${containerName}`);
+      await container.stop();
+      progress.succeed(`stopped container ${containerName}`);
+    }
+
+    let returnCode = 0;
+    const backupContainer = await prepareContainer(docker, containerName, backupPath);
+    for (const target of targets) {
+      const exitCode = await restore(backupContainer, target);
+      progress.succeed(`restored ${containerName}:${target.name} from ${path.join(backupPath, `${target.name}.tar`)}`);
+      if (exitCode > returnCode) {
+        returnCode = exitCode;
+      }
+    }
+    await closeContainer(backupContainer);
+    progress.succeed(`restore of ${containerName} complete (${targets.length} Volumes)`);
+
+    process.exitCode = returnCode;
+
+  } catch (err) {
+    progress.fail();
+    console.error(err);
+    process.exitCode = 2;
+  }
+}
+
 async function getMountsFromContainer(container: Docker.Container): Promise<Target[]> {
   const info = await container.inspect();
   return map(filter(info.Mounts, (mount: any) => mount.Type === 'volume' && mount.Driver === 'local'), (mount) => ({
@@ -138,11 +206,12 @@ async function prepareContainer(docker: Docker, forContainer: string, outputPath
   progress.start(`${bgCyan('prepare-container')} prepare container '${IMAGE_NAME}'`);
   const container = await docker.createContainer({
     Image: IMAGE_NAME,
+    Cmd: ['tail', '-f', '/dev/null'],
     HostConfig: {
       Binds: [`${path.resolve(outputPath)}:${BACKUP_MOUNT}`],
-      VolumesFrom: [forContainer]
-    },
-    OpenStdin: true
+      VolumesFrom: [forContainer],
+      AutoRemove: true
+    }
   });
   progress.start(`${bgCyan('prepare-container')} starting container '${container.id}'`);
   await container.start({});
@@ -150,7 +219,7 @@ async function prepareContainer(docker: Docker, forContainer: string, outputPath
 }
 
 async function prepareBackupPath(backupContainer: Docker.Container, containerName: string) {
-  const dateString = formatISO(new Date());
+  const dateString = format(new Date(), 'yyyy-MM-dd-HH-mm-ss');
   const backupDir = path.join(BACKUP_MOUNT, `${containerName}-${dateString}`);
   const mkdirCmd = ['mkdir', backupDir];
 
@@ -178,6 +247,20 @@ async function backup(backupContainer: Docker.Container, backupDir: string, targ
   return exitCode;
 }
 
+async function restore(backupContainer: Docker.Container, target: Target): Promise<number> {
+  const tarCmd = ['tar', 'xf', `${path.join(BACKUP_MOUNT, target.name)}.tar`, '--strip-components=1'];
+
+  progress.start(`${bgCyan('restore-backup')} ${target.name}: ${join(tarCmd, ' ')}`);
+  const exitCode = await execInContainer(backupContainer, tarCmd, target.path);
+  if (exitCode === 1) {
+    progress.warn('tar command returned exit code 1 - restore may be incomplete');
+  } else if (exitCode !== 0) {
+    throw new Error(`tar command failed with exit code ${exitCode}`);
+  }
+
+  return exitCode;
+}
+
 async function execInContainer(container: Docker.Container, command: string[], workingDir?: string): Promise<number> {
   const exec = await container.exec({ Cmd: command, WorkingDir: workingDir, Tty: true, AttachStdout: true, AttachStderr: true });
   const stream = await exec.start({});
@@ -190,17 +273,29 @@ async function execInContainer(container: Docker.Container, command: string[], w
 async function closeContainer(container: Docker.Container) {
   progress.start(`${bgCyan('close-container')} stopping container '${container.id}'`);
   await container.stop();
-  progress.start(`${bgCyan('close-container')} removing container '${container.id}'`);
-  await container.remove();
+  // progress.start(`${bgCyan('close-container')} removing container '${container.id}'`);
+  // await container.remove();
+}
+
+function printUsage() {
+  process.stdout.write(`USAGE: docker-volume-backup backup [options] <container names or ids...>\n`);
+  process.stdout.write(`USAGE: docker-volume-backup restore [options] <container name> <backup path>\n`);
 }
 
 const argv = minimist(process.argv.slice(2));
 
-if (argv['h'] || argv['help'] || argv._.length === 0) {
-  process.stdout.write(`USAGE: docker-volume-backup [options] <container names or ids...>\n`);
+if (argv['h'] || argv['help'] || argv._.length < 2) {
+  printUsage();
   process.exit(1);
 }
 
 const outputDir: string = argv['output-dir'] ?? argv['o'];
 
-dockerVolumeBackup({}, { outputDir }, argv._);
+if (argv._[0] === 'backup') {
+  dockerVolumeBackup({}, { outputDir }, argv._.slice(1));
+} else if (argv._[0] === 'restore') {
+  dockerVolumeRestore({}, argv._[1], argv._[2] ?? '.');
+} else {
+  printUsage();
+  process.exit(1);
+}

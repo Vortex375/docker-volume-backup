@@ -1,6 +1,6 @@
 {
   "name": "docker-volume-backup",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Command-Line Utility to take Backups of Volumes of Docker Containers",
   "main": "dist/bundle.js",
   "scripts": {
